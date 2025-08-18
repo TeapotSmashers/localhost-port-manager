@@ -639,8 +639,14 @@ func (cw *ConfigWatcher) Start() error {
 
 // Stop stops the configuration file watcher
 func (cw *ConfigWatcher) Stop() {
-	close(cw.stopChan)
-	cw.logger.Println("Stopped config file watcher")
+	select {
+	case <-cw.stopChan:
+		// Already stopped
+		return
+	default:
+		close(cw.stopChan)
+		cw.logger.Println("Stopped config file watcher")
+	}
 }
 
 // ReloadChan returns the channel that receives new configurations
@@ -1383,6 +1389,7 @@ func (s *PortRedirectService) Stop(ctx context.Context) error {
 	if s.configWatcher != nil {
 		s.configWatcher.Stop()
 		s.structuredLogger.LogInfo("shutdown_config_watcher", "Stopped configuration watcher")
+		s.configWatcher = nil // Prevent double-stop
 	}
 
 	// Gracefully shutdown the HTTP server
@@ -1409,6 +1416,7 @@ func (s *PortRedirectService) Cleanup() error {
 	if s.configWatcher != nil {
 		s.configWatcher.Stop()
 		s.structuredLogger.LogInfo("cleanup_config_watcher", "Stopped configuration watcher")
+		s.configWatcher = nil // Prevent double-stop
 	}
 
 	// Remove hosts file entries
