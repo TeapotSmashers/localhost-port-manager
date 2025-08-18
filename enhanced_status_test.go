@@ -402,7 +402,7 @@ func TestWebServiceMetricsTracking(t *testing.T) {
 		done := make(chan bool, 10)
 
 		// Start multiple goroutines to track metrics
-		for i := 0; i < 10; i++ {
+		for range 10 {
 			go func() {
 				defer func() { done <- true }()
 				webHandler.TrackRequest("192.168.1.100")
@@ -411,7 +411,7 @@ func TestWebServiceMetricsTracking(t *testing.T) {
 		}
 
 		// Wait for all goroutines to complete
-		for i := 0; i < 10; i++ {
+		for range 10 {
 			<-done
 		}
 
@@ -478,7 +478,7 @@ func TestHealthEndpointWebServiceMode(t *testing.T) {
 		body := w.Body.String()
 
 		// Parse JSON to verify structure
-		var healthResponse map[string]interface{}
+		var healthResponse map[string]any
 		if err := json.Unmarshal([]byte(body), &healthResponse); err != nil {
 			t.Errorf("Failed to parse JSON response: %v", err)
 		}
