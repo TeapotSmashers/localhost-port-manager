@@ -1,0 +1,32 @@
+[Unit]
+Description=Port Redirect Service
+Documentation=https://github.com/your-org/port-redirect-service
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/port-redirect-service
+Restart=always
+RestartSec=5
+User=root
+Group=root
+WorkingDirectory=/usr/local/bin
+
+# Security settings
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/etc/port-redirect /etc/hosts /var/log
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=port-redirect-service
+
+[Install]
+WantedBy=multi-user.target

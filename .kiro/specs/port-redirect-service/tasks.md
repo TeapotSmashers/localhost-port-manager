@@ -91,20 +91,20 @@
     - Ensure proper resource cleanup and logging
     - _Requirements: 3.2, 3.5, 7.4_
 
-- [ ] 8. Create cross-platform service installation
-  - [-] 8.1 Implement macOS launchd integration
+- [x] 8. Create cross-platform service installation
+  - [x] 8.1 Implement macOS launchd integration
     - Create launchd plist file template
     - Write installation script for macOS service registration
     - Add service management commands (start, stop, restart)
     - _Requirements: 5.1, 8.1, 8.6, 8.7_
   
-  - [ ] 8.2 Implement Linux systemd integration
+  - [x] 8.2 Implement Linux systemd integration
     - Create systemd service file template
     - Write installation script for systemd service registration
     - Add service management commands using systemctl
     - _Requirements: 5.2, 8.1, 8.6, 8.7_
   
-  - [ ] 8.3 Create unified installation script
+  - [x] 8.3 Create unified installation script
     - Write platform detection logic
     - Create single installation script that works on both platforms
     - Add uninstallation functionality with complete cleanup
