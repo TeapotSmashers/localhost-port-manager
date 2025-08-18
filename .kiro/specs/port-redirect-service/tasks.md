@@ -111,15 +111,15 @@
     - Implement installation validation and rollback on failure
     - _Requirements: 8.1, 8.2, 8.3, 8.4, 8.5_
 
-- [ ] 9. Create comprehensive documentation
-  - [ ] 9.1 Write README with installation instructions
+- [x] 9. Create comprehensive documentation
+  - [x] 9.1 Write README with installation instructions
     - Document installation process for both macOS and Linux
     - Include service management commands for both platforms
     - Add configuration file format and examples
     - Document troubleshooting steps and common issues
     - _Requirements: 8.6, 8.7_
   
-  - [ ] 9.2 Add usage examples and configuration guide
+  - [x] 9.2 Add usage examples and configuration guide
     - Create examples of common port configurations
     - Document status page usage and interpretation
     - Add security considerations and permission requirements
