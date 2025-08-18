@@ -1,21 +1,39 @@
 # Usage Guide and Configuration Examples
 
-This guide provides detailed usage examples and configuration scenarios for the Port Redirect Service.
+This guide provides detailed usage examples and configuration scenarios for the Port Redirect Service in both Local Mode and Web Service Mode.
 
 ## Table of Contents
 
-- [Basic Usage](#basic-usage)
+- [Deployment Mode Overview](#deployment-mode-overview)
+- [Local Mode Usage](#local-mode-usage)
+- [Web Service Mode Usage](#web-service-mode-usage)
 - [Configuration Examples](#configuration-examples)
 - [Development Workflows](#development-workflows)
 - [Status Page Guide](#status-page-guide)
 - [Security Considerations](#security-considerations)
 - [Advanced Configuration](#advanced-configuration)
 
-## Basic Usage
+## Deployment Mode Overview
 
-### Getting Started
+### Local Mode
+- **Purpose**: Local development workstation setup
+- **Requirements**: Root privileges, port 80 access
+- **Hosts Management**: Modifies `/etc/hosts` file
+- **Domain Format**: `<port>.local`, `<port>.dev`, etc.
+- **Use Case**: Individual developer machines
 
-After installation, the service automatically starts and creates a default configuration:
+### Web Service Mode  
+- **Purpose**: Deployed service for remote access
+- **Requirements**: Configurable port, DNS setup
+- **Hosts Management**: No hosts file modification
+- **Domain Format**: `<port>.yourdomain.com` (configurable patterns)
+- **Use Case**: Shared development environments, team access
+
+## Local Mode Usage
+
+### Getting Started (Local Mode)
+
+After installation, the service automatically starts in Local Mode and creates a default configuration:
 
 ```bash
 # Check if service is running
@@ -28,7 +46,7 @@ cat /etc/port-redirect/config.txt
 curl -I http://3000.local
 ```
 
-### Typical Development Workflow
+### Typical Local Development Workflow
 
 1. **Start your development server:**
    ```bash
@@ -51,13 +69,157 @@ curl -I http://3000.local
    open http://3000.test
    ```
 
+## Web Service Mode Usage
+
+### Getting Started (Web Service Mode)
+
+1. **Configure Web Service Mode:**
+   ```bash
+   sudo tee /etc/port-redirect/config.txt << EOF
+   # Port configuration
+   3000
+   8080
+   5173
+   
+   # Web service mode
+   mode=web
+   web_port=8080
+   domain_patterns=*.yourdomain.com
+   
+   # Optional rate limiting
+   enable_rate_limit=true
+   rate_limit_rps=100
+   EOF
+   ```
+
+2. **Install and start the service:**
+   ```bash
+   sudo ./install.sh install
+   sudo ./install.sh start
+   ```
+
+3. **Set up DNS (external step):**
+   ```bash
+   # Configure DNS to point *.yourdomain.com to your server IP
+   # Example DNS records:
+   # *.yourdomain.com A 192.168.1.100
+   ```
+
+4. **Test the web service:**
+   ```bash
+   # Test from external machine or with Host header
+   curl -I http://3000.yourdomain.com
+   
+   # Or test locally with Host header
+   curl -I -H "Host: 3000.yourdomain.com" http://localhost:8080
+   ```
+
+### DNS Setup for Web Service Mode
+
+Before using Web Service Mode, you need to configure DNS to point your domain patterns to your server:
+
+#### Option 1: Wildcard DNS Record (Recommended)
+```bash
+# DNS Configuration (in your DNS provider)
+# Type: A Record
+# Name: *.yourdomain.com
+# Value: YOUR_SERVER_IP
+# TTL: 300 (or your preference)
+
+# This allows all subdomains like:
+# 3000.yourdomain.com -> YOUR_SERVER_IP
+# 8080.yourdomain.com -> YOUR_SERVER_IP
+```
+
+#### Option 2: Individual DNS Records
+```bash
+# DNS Configuration (multiple A records)
+3000.yourdomain.com -> YOUR_SERVER_IP
+8080.yourdomain.com -> YOUR_SERVER_IP
+5173.yourdomain.com -> YOUR_SERVER_IP
+```
+
+#### Option 3: Local Testing with /etc/hosts
+```bash
+# For testing purposes, add to /etc/hosts on client machines
+echo "YOUR_SERVER_IP 3000.yourdomain.com" | sudo tee -a /etc/hosts
+echo "YOUR_SERVER_IP 8080.yourdomain.com" | sudo tee -a /etc/hosts
+echo "YOUR_SERVER_IP 5173.yourdomain.com" | sudo tee -a /etc/hosts
+```
+
+### Web Service Development Workflow
+
+1. **Start your development servers:**
+   ```bash
+   # Terminal 1: Frontend
+   npm start  # Starts on localhost:3000
+   
+   # Terminal 2: Backend API
+   node server.js  # Starts on localhost:8080
+   
+   # Terminal 3: Additional service
+   python app.py  # Starts on localhost:5173
+   ```
+
+2. **Access services remotely:**
+   ```bash
+   # Frontend
+   open http://3000.yourdomain.com
+   
+   # Backend API
+   curl http://8080.yourdomain.com/api/health
+   
+   # Additional service
+   open http://5173.yourdomain.com
+   ```
+
+3. **Monitor usage:**
+   ```bash
+   # Check service metrics
+   curl http://your-server:8080/status?format=json | jq '.web_service_metrics'
+   
+   # View request statistics
+   curl http://your-server:8080/status | grep -A 10 "Web Service Metrics"
+   ```
+
+### Firewall Configuration for Web Service Mode
+
+#### Linux (ufw)
+```bash
+# Allow web service port
+sudo ufw allow 8080/tcp
+
+# Or allow from specific networks only
+sudo ufw allow from 192.168.1.0/24 to any port 8080
+```
+
+#### Linux (iptables)
+```bash
+# Allow web service port
+sudo iptables -A INPUT -p tcp --dport 8080 -j ACCEPT
+
+# Save rules (varies by distribution)
+sudo iptables-save > /etc/iptables/rules.v4
+```
+
+#### macOS (pfctl)
+```bash
+# Create pf rule file
+echo "pass in proto tcp from any to any port 8080" | sudo tee -a /etc/pf.conf
+
+# Load rules
+sudo pfctl -f /etc/pf.conf
+sudo pfctl -e
+```
+
 ## Configuration Examples
 
-### Frontend Development
+### Local Mode Configurations
 
+#### Frontend Development (Local Mode)
 ```bash
 # /etc/port-redirect/config.txt
-# Frontend Development Ports
+# Frontend Development Ports - Local Mode
 
 # React Create App
 3000
@@ -82,13 +244,14 @@ curl -I http://3000.local
 
 # Rollup
 10001
+
+# Local mode is default (no additional config needed)
 ```
 
-### Backend Development
-
+#### Backend Development (Local Mode)
 ```bash
 # /etc/port-redirect/config.txt
-# Backend Development Ports
+# Backend Development Ports - Local Mode
 
 # Express.js
 3000
@@ -115,6 +278,78 @@ curl -I http://3000.local
 
 # Ruby on Rails
 3000
+```
+
+### Web Service Mode Configurations
+
+#### Single Domain Web Service
+```bash
+# /etc/port-redirect/config.txt
+# Single domain web service configuration
+
+# Application ports
+3000    # Frontend
+8000    # Backend API
+5173    # Dev tools
+
+# Web service mode
+mode=web
+web_port=8080
+domain_patterns=*.sankalpmukim.dev
+
+# Basic rate limiting
+enable_rate_limit=true
+rate_limit_rps=100
+```
+
+#### Multi-Domain Web Service
+```bash
+# /etc/port-redirect/config.txt
+# Multi-domain web service configuration
+
+# Development ports
+3000    # Main app
+8000    # API server
+5173    # Tools
+
+# Web service mode
+mode=web
+web_port=80
+domain_patterns=*.dev.company.com,*.staging.company.com,*.example.com
+
+# Enhanced rate limiting for production
+enable_rate_limit=true
+rate_limit_rps=50
+```
+
+#### Team Development Web Service
+```bash
+# /etc/port-redirect/config.txt
+# Team development web service
+
+# Frontend applications
+3000    # Main application
+3001    # Admin interface
+3002    # Mobile web app
+
+# Backend services
+8000    # User API
+8001    # Product API
+8002    # Order API
+
+# Development tools
+9000    # Documentation
+9001    # Monitoring
+9002    # Testing tools
+
+# Web service configuration
+mode=web
+web_port=8080
+domain_patterns=*.team.dev,*.internal.company.com
+
+# Moderate rate limiting for team use
+enable_rate_limit=true
+rate_limit_rps=200
 ```
 
 ### Full-Stack Development

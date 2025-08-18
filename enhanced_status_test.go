@@ -24,8 +24,8 @@ func TestEnhancedStatusEndpoint(t *testing.T) {
 
 	config := &Config{
 		Ports:           []int{3000, 8080},
-		ConfigFilePath:  env.ConfigFile,
-		HostsBackupPath: env.BackupFile,
+		ConfigFilePath:  env.MockConfigFile,
+		HostsBackupPath: env.MockHostsFile + ".backup",
 		DeploymentMode:  LocalMode,
 		WebServicePort:  8080,
 		DomainPatterns:  []string{"*.example.com"},
@@ -100,8 +100,8 @@ func TestWebServiceMetrics(t *testing.T) {
 
 	config := &Config{
 		Ports:           []int{3000, 8080},
-		ConfigFilePath:  env.ConfigFile,
-		HostsBackupPath: env.BackupFile,
+		ConfigFilePath:  env.MockConfigFile,
+		HostsBackupPath: env.MockHostsFile + ".backup",
 		DeploymentMode:  WebServiceMode,
 		WebServicePort:  8080,
 		DomainPatterns:  []string{"*.example.com"},
@@ -117,6 +117,9 @@ func TestWebServiceMetrics(t *testing.T) {
 		startTime:         time.Now().Add(-1 * time.Hour),
 		configLoaded:      time.Now().Add(-30 * time.Minute),
 	}
+
+	// Initialize hosts manager
+	service.hostsManager = NewHostsManager(env.MockHostsFile, config.HostsBackupPath)
 
 	// Initialize mode-aware request handler
 	service.requestHandler = NewModeAwareHandler(config.DeploymentMode, config, structuredLogger, securityValidator)
@@ -206,8 +209,8 @@ func TestHealthEndpoint(t *testing.T) {
 
 	config := &Config{
 		Ports:           []int{3000, 8080},
-		ConfigFilePath:  env.ConfigFile,
-		HostsBackupPath: env.BackupFile,
+		ConfigFilePath:  env.MockConfigFile,
+		HostsBackupPath: env.MockHostsFile + ".backup",
 		DeploymentMode:  LocalMode,
 		WebServicePort:  8080,
 		DomainPatterns:  []string{"*.example.com"},
@@ -226,6 +229,10 @@ func TestHealthEndpoint(t *testing.T) {
 
 	service.hostsManager = NewHostsManager(env.MockHostsFile, config.HostsBackupPath)
 
+	// Create backup file and add expected entries to make the service healthy
+	service.hostsManager.CreateBackup()
+	service.hostsManager.AddPortEntries(config.Ports)
+
 	t.Run("Health endpoint returns OK for healthy service", func(t *testing.T) {
 		req := httptest.NewRequest("GET", "/health", nil)
 		w := httptest.NewRecorder()
@@ -233,11 +240,12 @@ func TestHealthEndpoint(t *testing.T) {
 		service.handleHealth(w, req)
 
 		resp := w.Result()
+		body := w.Body.String()
+
 		if resp.StatusCode != http.StatusOK {
 			t.Errorf("Expected status 200, got %d", resp.StatusCode)
 		}
 
-		body := w.Body.String()
 		if !strings.Contains(body, "OK") {
 			t.Errorf("Response should contain 'OK' for healthy service")
 		}
@@ -332,8 +340,8 @@ func TestWebServiceMetricsTracking(t *testing.T) {
 
 	config := &Config{
 		Ports:           []int{3000, 8080},
-		ConfigFilePath:  env.ConfigFile,
-		HostsBackupPath: env.BackupFile,
+		ConfigFilePath:  env.MockConfigFile,
+		HostsBackupPath: env.MockHostsFile + ".backup",
 		DeploymentMode:  WebServiceMode,
 		WebServicePort:  8080,
 		DomainPatterns:  []string{"*.example.com"},
@@ -432,8 +440,8 @@ func TestHealthEndpointWebServiceMode(t *testing.T) {
 
 	config := &Config{
 		Ports:           []int{3000, 8080},
-		ConfigFilePath:  env.ConfigFile,
-		HostsBackupPath: env.BackupFile,
+		ConfigFilePath:  env.MockConfigFile,
+		HostsBackupPath: env.MockHostsFile + ".backup",
 		DeploymentMode:  WebServiceMode,
 		WebServicePort:  8080,
 		DomainPatterns:  []string{"*.example.com"},
@@ -449,6 +457,9 @@ func TestHealthEndpointWebServiceMode(t *testing.T) {
 		startTime:         time.Now().Add(-1 * time.Hour),
 		configLoaded:      time.Now().Add(-30 * time.Minute),
 	}
+
+	// Initialize hosts manager
+	service.hostsManager = NewHostsManager(env.MockHostsFile, config.HostsBackupPath)
 
 	// Initialize mode-aware request handler
 	service.requestHandler = NewModeAwareHandler(config.DeploymentMode, config, structuredLogger, securityValidator)

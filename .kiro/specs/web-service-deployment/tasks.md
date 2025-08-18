@@ -70,5 +70,5 @@
   - Write unit tests for enhanced status endpoints
   - _Requirements: 6.4_
 
-- [ ] 10. Add/update comprehensive documentation. 
+- [x] 10. Add/update comprehensive documentation. 
   - It should include step by step any and all configuration required, how to control the two modes.
