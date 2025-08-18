@@ -2,14 +2,19 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
+	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -23,14 +28,16 @@ type Config struct {
 
 // PortRedirectService is the main service struct
 type PortRedirectService struct {
-	server        *http.Server
-	config        *Config
-	hostsManager  *HostsManager
-	logger        *log.Logger
-	configWatcher *ConfigWatcher
-	startTime     time.Time
-	configLoaded  time.Time
-	lastError     string
+	server           *http.Server
+	config           *Config
+	hostsManager     *HostsManager
+	logger           *log.Logger
+	structuredLogger *StructuredLogger
+	logFileManager   *LogFileManager
+	configWatcher    *ConfigWatcher
+	startTime        time.Time
+	configLoaded     time.Time
+	lastError        string
 }
 
 // HostsManager manages /etc/hosts file entries
@@ -340,6 +347,155 @@ type ServiceError struct {
 	Recoverable bool
 }
 
+// StructuredLogger provides structured logging capabilities
+type StructuredLogger struct {
+	logger *log.Logger
+}
+
+// NewStructuredLogger creates a new structured logger
+func NewStructuredLogger(logger *log.Logger) *StructuredLogger {
+	return &StructuredLogger{logger: logger}
+}
+
+// LogRedirect logs a redirect operation with structured information
+func (sl *StructuredLogger) LogRedirect(sourceHost, targetURL, clientIP string, statusCode int) {
+	sl.logger.Printf("[REDIRECT] source=%s target=%s client=%s status=%d",
+		sourceHost, targetURL, clientIP, statusCode)
+}
+
+// LogError logs an error with structured information
+func (sl *StructuredLogger) LogError(operation, message string, err error) {
+	if err != nil {
+		sl.logger.Printf("[ERROR] operation=%s message=%s error=%v", operation, message, err)
+	} else {
+		sl.logger.Printf("[ERROR] operation=%s message=%s", operation, message)
+	}
+}
+
+// LogInfo logs informational messages with structured format
+func (sl *StructuredLogger) LogInfo(operation, message string) {
+	sl.logger.Printf("[INFO] operation=%s message=%s", operation, message)
+}
+
+// LogWarning logs warning messages with structured format
+func (sl *StructuredLogger) LogWarning(operation, message string) {
+	sl.logger.Printf("[WARN] operation=%s message=%s", operation, message)
+}
+
+// LogStartup logs service startup information
+func (sl *StructuredLogger) LogStartup(version, configPath string, portCount int) {
+	sl.logger.Printf("[STARTUP] service=port-redirect-service version=%s config=%s ports=%d",
+		version, configPath, portCount)
+}
+
+// LogShutdown logs service shutdown information
+func (sl *StructuredLogger) LogShutdown(reason string, uptime time.Duration) {
+	sl.logger.Printf("[SHUTDOWN] reason=%s uptime=%s", reason, uptime.String())
+}
+
+// LogConfigChange logs configuration changes
+func (sl *StructuredLogger) LogConfigChange(oldPortCount, newPortCount int) {
+	sl.logger.Printf("[CONFIG] operation=reload old_ports=%d new_ports=%d", oldPortCount, newPortCount)
+}
+
+// LogFileManager handles log file rotation and size management
+type LogFileManager struct {
+	logFilePath string
+	maxSize     int64 // Maximum size in bytes
+	maxFiles    int   // Maximum number of rotated files to keep
+	logger      *log.Logger
+}
+
+// NewLogFileManager creates a new log file manager
+func NewLogFileManager(logFilePath string, maxSizeMB int, maxFiles int) *LogFileManager {
+	return &LogFileManager{
+		logFilePath: logFilePath,
+		maxSize:     int64(maxSizeMB) * 1024 * 1024, // Convert MB to bytes
+		maxFiles:    maxFiles,
+	}
+}
+
+// SetupLogFile sets up logging to a file with rotation
+func (lfm *LogFileManager) SetupLogFile() (*log.Logger, error) {
+	// Create log directory if it doesn't exist
+	logDir := filepath.Dir(lfm.logFilePath)
+	if err := os.MkdirAll(logDir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create log directory: %w", err)
+	}
+
+	// Open log file for appending
+	logFile, err := os.OpenFile(lfm.logFilePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open log file: %w", err)
+	}
+
+	// Create logger that writes to both file and stdout
+	multiWriter := io.MultiWriter(os.Stdout, logFile)
+	logger := log.New(multiWriter, "[PORT-REDIRECT] ", log.LstdFlags)
+
+	lfm.logger = logger
+	return logger, nil
+}
+
+// CheckRotation checks if log rotation is needed and performs it
+func (lfm *LogFileManager) CheckRotation() error {
+	// Check if log file exists and get its size
+	fileInfo, err := os.Stat(lfm.logFilePath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil // File doesn't exist, no rotation needed
+		}
+		return fmt.Errorf("failed to stat log file: %w", err)
+	}
+
+	// Check if rotation is needed
+	if fileInfo.Size() < lfm.maxSize {
+		return nil // File is not large enough for rotation
+	}
+
+	// Perform rotation
+	return lfm.rotateLogFile()
+}
+
+// rotateLogFile performs the actual log file rotation
+func (lfm *LogFileManager) rotateLogFile() error {
+	// Close current log file if logger exists
+	if lfm.logger != nil {
+		lfm.logger.Println("Rotating log file...")
+	}
+
+	// Rotate existing files
+	for i := lfm.maxFiles - 1; i >= 1; i-- {
+		oldPath := fmt.Sprintf("%s.%d", lfm.logFilePath, i)
+		newPath := fmt.Sprintf("%s.%d", lfm.logFilePath, i+1)
+
+		if _, err := os.Stat(oldPath); err == nil {
+			if i == lfm.maxFiles-1 {
+				// Remove the oldest file
+				os.Remove(newPath)
+			}
+			os.Rename(oldPath, newPath)
+		}
+	}
+
+	// Move current log file to .1
+	rotatedPath := fmt.Sprintf("%s.1", lfm.logFilePath)
+	if err := os.Rename(lfm.logFilePath, rotatedPath); err != nil {
+		return fmt.Errorf("failed to rotate log file: %w", err)
+	}
+
+	// Create new log file
+	newLogger, err := lfm.SetupLogFile()
+	if err != nil {
+		return fmt.Errorf("failed to create new log file after rotation: %w", err)
+	}
+
+	lfm.logger = newLogger
+	lfm.logger.Println("Log file rotated successfully")
+
+	return nil
+}
+
 // Default configuration values
 const (
 	DefaultConfigPath   = "/etc/port-redirect/config.txt"
@@ -610,53 +766,479 @@ func isPortConfigured(port int, configuredPorts []int) bool {
 // handleRedirect handles HTTP requests and performs port-based redirects
 func (s *PortRedirectService) handleRedirect(w http.ResponseWriter, r *http.Request) {
 	host := r.Host
+	clientIP := s.getClientIP(r)
 
 	// Log the incoming request
-	s.logger.Printf("Received request for host: %s", host)
+	s.structuredLogger.LogInfo("request_received", fmt.Sprintf("host=%s client=%s", host, clientIP))
 
 	// Extract port from host header
 	port, extracted := extractPortFromHost(host)
 	if !extracted {
 		// Host doesn't match expected format, return 404
-		s.logger.Printf("Invalid host format: %s", host)
+		s.structuredLogger.LogError("port_extraction", fmt.Sprintf("Invalid host format: %s", host), nil)
 		http.Error(w, "Not Found: Host format should be <port>.<tld> (e.g., 3000.local)", http.StatusNotFound)
+		s.structuredLogger.LogRedirect(host, "none", clientIP, http.StatusNotFound)
 		return
 	}
 
 	// Validate port number
 	if !validatePort(port) {
 		// Port is out of valid range, return 400
-		s.logger.Printf("Invalid port number: %d", port)
+		s.structuredLogger.LogError("port_validation", fmt.Sprintf("Invalid port number: %d", port), nil)
 		http.Error(w, fmt.Sprintf("Bad Request: Port number %d is out of valid range (1-65535)", port), http.StatusBadRequest)
+		s.structuredLogger.LogRedirect(host, "none", clientIP, http.StatusBadRequest)
 		return
 	}
 
 	// Check if port is configured
 	if !isPortConfigured(port, s.config.Ports) {
 		// Port is not in configuration, return 404
-		s.logger.Printf("Port %d not configured", port)
+		s.structuredLogger.LogWarning("port_not_configured", fmt.Sprintf("Port %d not in configuration", port))
 		http.Error(w, fmt.Sprintf("Not Found: Port %d is not configured in the service", port), http.StatusNotFound)
+		s.structuredLogger.LogRedirect(host, "none", clientIP, http.StatusNotFound)
 		return
 	}
 
 	// Generate redirect URL
 	redirectURL := fmt.Sprintf("http://localhost:%d", port)
 
-	// Log the redirect
-	s.logger.Printf("Redirecting %s -> %s", host, redirectURL)
+	// Log the successful redirect
+	s.structuredLogger.LogRedirect(host, redirectURL, clientIP, http.StatusMovedPermanently)
 
 	// Send HTTP 301 permanent redirect
 	http.Redirect(w, r, redirectURL, http.StatusMovedPermanently)
 }
 
+// getClientIP extracts the client IP address from the request
+func (s *PortRedirectService) getClientIP(r *http.Request) string {
+	// Check X-Forwarded-For header first (for proxied requests)
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		// Take the first IP in the list
+		if ips := strings.Split(xff, ","); len(ips) > 0 {
+			return strings.TrimSpace(ips[0])
+		}
+	}
+
+	// Check X-Real-IP header
+	if xri := r.Header.Get("X-Real-IP"); xri != "" {
+		return xri
+	}
+
+	// Fall back to RemoteAddr
+	if ip, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		return ip
+	}
+
+	return r.RemoteAddr
+}
+
 // handleStatus handles requests to the /status endpoint
 func (s *PortRedirectService) handleStatus(w http.ResponseWriter, r *http.Request) {
-	// This will be implemented in a later task
-	// For now, return a simple response
-	w.Header().Set("Content-Type", "text/plain")
+	// Check if JSON format is requested
+	if r.URL.Query().Get("format") == "json" || r.Header.Get("Accept") == "application/json" {
+		s.handleStatusJSON(w, r)
+		return
+	}
+
+	// Generate HTML status page
+	s.handleStatusHTML(w, r)
+}
+
+// handleStatusJSON handles JSON API requests for status
+func (s *PortRedirectService) handleStatusJSON(w http.ResponseWriter, r *http.Request) {
+	status := s.GetServiceStatus()
+	config := s.GetServiceConfig()
+	configErrors := s.ValidateConfiguration()
+
+	response := map[string]interface{}{
+		"status":        status,
+		"config":        config,
+		"config_errors": configErrors,
+		"timestamp":     time.Now(),
+	}
+
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, "Port Redirect Service Status\n")
-	fmt.Fprintf(w, "Configured ports: %v\n", s.config.Ports)
+
+	// Simple JSON encoding without external dependencies
+	s.writeJSON(w, response)
+}
+
+// handleStatusHTML generates and serves the HTML status page
+func (s *PortRedirectService) handleStatusHTML(w http.ResponseWriter, r *http.Request) {
+	status := s.GetServiceStatus()
+	config := s.GetServiceConfig()
+	configErrors := s.ValidateConfiguration()
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+
+	html := s.generateStatusHTML(status, config, configErrors)
+	fmt.Fprint(w, html)
+}
+
+// generateStatusHTML creates the HTML content for the status page
+func (s *PortRedirectService) generateStatusHTML(status *ServiceStatus, config *ServiceConfig, configErrors []string) string {
+	// Format uptime
+	uptimeStr := s.formatDuration(status.Uptime)
+
+	// Format timestamps
+	configLoadedStr := status.ConfigLoaded.Format("2006-01-02 15:04:05")
+	lastModifiedStr := config.LastModified.Format("2006-01-02 15:04:05")
+
+	// Build ports list
+	portsStr := ""
+	for i, port := range status.PortsConfigured {
+		if i > 0 {
+			portsStr += ", "
+		}
+		portsStr += fmt.Sprintf("%d", port)
+	}
+
+	// Build hosts status
+	hostsStatusClass := "status-ok"
+	hostsStatusText := "Valid"
+	if !status.HostsStatus.EntriesValid {
+		hostsStatusClass = "status-error"
+		hostsStatusText = "Invalid"
+	}
+
+	// Build missing entries
+	missingEntriesHTML := ""
+	if len(status.HostsStatus.MissingEntries) > 0 {
+		missingEntriesHTML = "<h4>Missing Entries:</h4><ul>"
+		for _, entry := range status.HostsStatus.MissingEntries {
+			missingEntriesHTML += fmt.Sprintf("<li>%s</li>", entry)
+		}
+		missingEntriesHTML += "</ul>"
+	}
+
+	// Build extra entries
+	extraEntriesHTML := ""
+	if len(status.HostsStatus.ExtraEntries) > 0 {
+		extraEntriesHTML = "<h4>Extra Entries:</h4><ul>"
+		for _, entry := range status.HostsStatus.ExtraEntries {
+			extraEntriesHTML += fmt.Sprintf("<li>%s</li>", entry)
+		}
+		extraEntriesHTML += "</ul>"
+	}
+
+	// Build configuration errors
+	configErrorsHTML := ""
+	if len(configErrors) > 0 {
+		configErrorsHTML = "<div class='section error'><h3>Configuration Errors</h3><ul>"
+		for _, err := range configErrors {
+			configErrorsHTML += fmt.Sprintf("<li>%s</li>", err)
+		}
+		configErrorsHTML += "</ul></div>"
+	}
+
+	// Build last error
+	lastErrorHTML := ""
+	if status.LastError != "" {
+		lastErrorHTML = fmt.Sprintf(`
+		<div class="section error">
+			<h3>Last Error</h3>
+			<p>%s</p>
+		</div>`, status.LastError)
+	}
+
+	return fmt.Sprintf(`<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Port Redirect Service - Status</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            line-height: 1.6;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        h1 {
+            color: #333;
+            border-bottom: 2px solid #007acc;
+            padding-bottom: 10px;
+        }
+        h2 {
+            color: #555;
+            margin-top: 30px;
+        }
+        h3 {
+            color: #666;
+            margin-top: 20px;
+        }
+        .section {
+            margin: 20px 0;
+            padding: 15px;
+            border-radius: 5px;
+            border-left: 4px solid #007acc;
+            background-color: #f8f9fa;
+        }
+        .section.error {
+            border-left-color: #dc3545;
+            background-color: #f8d7da;
+        }
+        .status-ok {
+            color: #28a745;
+            font-weight: bold;
+        }
+        .status-error {
+            color: #dc3545;
+            font-weight: bold;
+        }
+        .info-grid {
+            display: grid;
+            grid-template-columns: 200px 1fr;
+            gap: 10px;
+            margin: 10px 0;
+        }
+        .info-label {
+            font-weight: bold;
+            color: #666;
+        }
+        .ports {
+            font-family: monospace;
+            background-color: #e9ecef;
+            padding: 5px 10px;
+            border-radius: 3px;
+        }
+        .refresh-link {
+            display: inline-block;
+            margin-top: 20px;
+            padding: 10px 20px;
+            background-color: #007acc;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+        }
+        .refresh-link:hover {
+            background-color: #005a9e;
+        }
+        .json-link {
+            display: inline-block;
+            margin-left: 10px;
+            padding: 10px 20px;
+            background-color: #6c757d;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+        }
+        .json-link:hover {
+            background-color: #545b62;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Port Redirect Service Status</h1>
+        
+        <div class="section">
+            <h2>Service Information</h2>
+            <div class="info-grid">
+                <div class="info-label">Uptime:</div>
+                <div>%s</div>
+                <div class="info-label">Config Loaded:</div>
+                <div>%s</div>
+                <div class="info-label">Configured Ports:</div>
+                <div class="ports">%s</div>
+            </div>
+        </div>
+
+        <div class="section">
+            <h2>Hosts File Status</h2>
+            <div class="info-grid">
+                <div class="info-label">Backup Exists:</div>
+                <div class="%s">%t</div>
+                <div class="info-label">Entries Valid:</div>
+                <div class="%s">%s</div>
+            </div>
+            %s
+            %s
+        </div>
+
+        <div class="section">
+            <h2>Configuration</h2>
+            <div class="info-grid">
+                <div class="info-label">Config File:</div>
+                <div>%s</div>
+                <div class="info-label">Last Modified:</div>
+                <div>%s</div>
+                <div class="info-label">Hosts File:</div>
+                <div>%s</div>
+                <div class="info-label">Backup Path:</div>
+                <div>%s</div>
+            </div>
+        </div>
+
+        %s
+        %s
+
+        <div style="margin-top: 30px;">
+            <a href="/status" class="refresh-link">Refresh</a>
+            <a href="/status?format=json" class="json-link">JSON API</a>
+        </div>
+    </div>
+</body>
+</html>`,
+		uptimeStr,
+		configLoadedStr,
+		portsStr,
+		s.getBoolStatusClass(status.HostsStatus.BackupExists),
+		status.HostsStatus.BackupExists,
+		hostsStatusClass,
+		hostsStatusText,
+		missingEntriesHTML,
+		extraEntriesHTML,
+		config.ConfigPath,
+		lastModifiedStr,
+		config.HostsPath,
+		config.BackupPath,
+		configErrorsHTML,
+		lastErrorHTML,
+	)
+}
+
+// formatDuration formats a duration into a human-readable string
+func (s *PortRedirectService) formatDuration(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%.1f seconds", d.Seconds())
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%.1f minutes", d.Minutes())
+	}
+	if d < 24*time.Hour {
+		return fmt.Sprintf("%.1f hours", d.Hours())
+	}
+	return fmt.Sprintf("%.1f days", d.Hours()/24)
+}
+
+// getBoolStatusClass returns the appropriate CSS class for boolean status
+func (s *PortRedirectService) getBoolStatusClass(value bool) string {
+	if value {
+		return "status-ok"
+	}
+	return "status-error"
+}
+
+// writeJSON writes a simple JSON response without external dependencies
+func (s *PortRedirectService) writeJSON(w http.ResponseWriter, data map[string]interface{}) {
+	// Simple JSON serialization for basic types
+	fmt.Fprint(w, "{\n")
+
+	first := true
+	for key, value := range data {
+		if !first {
+			fmt.Fprint(w, ",\n")
+		}
+		first = false
+
+		fmt.Fprintf(w, "  \"%s\": ", key)
+		s.writeJSONValue(w, value)
+	}
+
+	fmt.Fprint(w, "\n}")
+}
+
+// writeJSONValue writes a JSON value without external dependencies
+func (s *PortRedirectService) writeJSONValue(w http.ResponseWriter, value interface{}) {
+	switch v := value.(type) {
+	case string:
+		fmt.Fprintf(w, "\"%s\"", strings.ReplaceAll(v, "\"", "\\\""))
+	case int:
+		fmt.Fprintf(w, "%d", v)
+	case bool:
+		fmt.Fprintf(w, "%t", v)
+	case time.Time:
+		fmt.Fprintf(w, "\"%s\"", v.Format(time.RFC3339))
+	case time.Duration:
+		fmt.Fprintf(w, "\"%s\"", v.String())
+	case []int:
+		fmt.Fprint(w, "[")
+		for i, item := range v {
+			if i > 0 {
+				fmt.Fprint(w, ", ")
+			}
+			fmt.Fprintf(w, "%d", item)
+		}
+		fmt.Fprint(w, "]")
+	case []string:
+		fmt.Fprint(w, "[")
+		for i, item := range v {
+			if i > 0 {
+				fmt.Fprint(w, ", ")
+			}
+			fmt.Fprintf(w, "\"%s\"", strings.ReplaceAll(item, "\"", "\\\""))
+		}
+		fmt.Fprint(w, "]")
+	case *ServiceStatus:
+		fmt.Fprint(w, "{\n")
+		fmt.Fprintf(w, "    \"uptime\": \"%s\",\n", v.Uptime.String())
+		fmt.Fprintf(w, "    \"config_loaded\": \"%s\",\n", v.ConfigLoaded.Format(time.RFC3339))
+		fmt.Fprint(w, "    \"ports_configured\": [")
+		for i, port := range v.PortsConfigured {
+			if i > 0 {
+				fmt.Fprint(w, ", ")
+			}
+			fmt.Fprintf(w, "%d", port)
+		}
+		fmt.Fprint(w, "],\n")
+		fmt.Fprint(w, "    \"hosts_status\": {\n")
+		fmt.Fprintf(w, "      \"backup_exists\": %t,\n", v.HostsStatus.BackupExists)
+		fmt.Fprintf(w, "      \"entries_valid\": %t", v.HostsStatus.EntriesValid)
+		if len(v.HostsStatus.MissingEntries) > 0 {
+			fmt.Fprint(w, ",\n      \"missing_entries\": [")
+			for i, entry := range v.HostsStatus.MissingEntries {
+				if i > 0 {
+					fmt.Fprint(w, ", ")
+				}
+				fmt.Fprintf(w, "\"%s\"", strings.ReplaceAll(entry, "\"", "\\\""))
+			}
+			fmt.Fprint(w, "]")
+		}
+		if len(v.HostsStatus.ExtraEntries) > 0 {
+			fmt.Fprint(w, ",\n      \"extra_entries\": [")
+			for i, entry := range v.HostsStatus.ExtraEntries {
+				if i > 0 {
+					fmt.Fprint(w, ", ")
+				}
+				fmt.Fprintf(w, "\"%s\"", strings.ReplaceAll(entry, "\"", "\\\""))
+			}
+			fmt.Fprint(w, "]")
+		}
+		fmt.Fprint(w, "\n    }")
+		if v.LastError != "" {
+			fmt.Fprintf(w, ",\n    \"last_error\": \"%s\"", strings.ReplaceAll(v.LastError, "\"", "\\\""))
+		}
+		fmt.Fprint(w, "\n  }")
+	case *ServiceConfig:
+		fmt.Fprint(w, "{\n")
+		fmt.Fprint(w, "    \"ports\": [")
+		for i, port := range v.Ports {
+			if i > 0 {
+				fmt.Fprint(w, ", ")
+			}
+			fmt.Fprintf(w, "%d", port)
+		}
+		fmt.Fprint(w, "],\n")
+		fmt.Fprintf(w, "    \"last_modified\": \"%s\",\n", v.LastModified.Format(time.RFC3339))
+		fmt.Fprintf(w, "    \"config_path\": \"%s\",\n", v.ConfigPath)
+		fmt.Fprintf(w, "    \"hosts_path\": \"%s\",\n", v.HostsPath)
+		fmt.Fprintf(w, "    \"backup_path\": \"%s\"\n", v.BackupPath)
+		fmt.Fprint(w, "  }")
+	default:
+		fmt.Fprintf(w, "null")
+	}
 }
 
 // GetServiceStatus collects and returns the current service status
@@ -769,13 +1351,189 @@ func (s *PortRedirectService) setupRoutes() {
 	s.server.Handler = mux
 }
 
+// Start starts the HTTP server and begins listening for requests
+func (s *PortRedirectService) Start() error {
+	s.structuredLogger.LogInfo("server_start", "Starting HTTP server on port 80")
+
+	// Check log rotation before starting
+	if s.logFileManager != nil {
+		if err := s.logFileManager.CheckRotation(); err != nil {
+			s.structuredLogger.LogWarning("log_rotation", fmt.Sprintf("Failed to check log rotation: %v", err))
+		}
+	}
+
+	// Start the server in a goroutine so it doesn't block
+	go func() {
+		if err := s.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			s.structuredLogger.LogError("server_error", "HTTP server encountered an error", err)
+			s.lastError = fmt.Sprintf("HTTP server error: %v", err)
+		}
+	}()
+
+	s.structuredLogger.LogInfo("server_started", "HTTP server started successfully on port 80")
+	return nil
+}
+
+// Stop gracefully shuts down the HTTP server
+func (s *PortRedirectService) Stop(ctx context.Context) error {
+	uptime := time.Since(s.startTime)
+	s.structuredLogger.LogShutdown("graceful_shutdown", uptime)
+
+	// Stop config watcher first to prevent new configuration changes during shutdown
+	if s.configWatcher != nil {
+		s.configWatcher.Stop()
+		s.structuredLogger.LogInfo("shutdown_config_watcher", "Stopped configuration watcher")
+	}
+
+	// Gracefully shutdown the HTTP server
+	if err := s.server.Shutdown(ctx); err != nil {
+		s.structuredLogger.LogError("server_shutdown", "Error during server shutdown", err)
+		// If graceful shutdown fails, force close
+		if closeErr := s.server.Close(); closeErr != nil {
+			s.structuredLogger.LogError("server_force_close", "Error during forced server close", closeErr)
+		}
+		return err
+	}
+
+	s.structuredLogger.LogInfo("server_stopped", "HTTP server stopped successfully")
+	return nil
+}
+
+// Cleanup performs cleanup operations including hosts file restoration
+func (s *PortRedirectService) Cleanup() error {
+	s.structuredLogger.LogInfo("cleanup_start", "Performing cleanup operations")
+
+	var cleanupErrors []error
+
+	// Stop config watcher if it exists (may already be stopped in Stop method)
+	if s.configWatcher != nil {
+		s.configWatcher.Stop()
+		s.structuredLogger.LogInfo("cleanup_config_watcher", "Stopped configuration watcher")
+	}
+
+	// Remove hosts file entries
+	if err := s.hostsManager.RemovePortEntries(); err != nil {
+		s.structuredLogger.LogError("cleanup_hosts", "Failed to remove hosts file entries", err)
+		cleanupErrors = append(cleanupErrors, fmt.Errorf("hosts cleanup failed: %w", err))
+
+		// Try to restore from backup as fallback
+		s.structuredLogger.LogInfo("cleanup_fallback", "Attempting to restore hosts file from backup")
+		if restoreErr := s.hostsManager.RestoreBackup(); restoreErr != nil {
+			s.structuredLogger.LogError("cleanup_restore", "Failed to restore hosts file from backup", restoreErr)
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("backup restore failed: %w", restoreErr))
+		} else {
+			s.structuredLogger.LogInfo("cleanup_restore_success", "Successfully restored hosts file from backup")
+		}
+	} else {
+		s.structuredLogger.LogInfo("cleanup_hosts_success", "Successfully removed hosts file entries")
+	}
+
+	// Log rotation cleanup if needed
+	if s.logFileManager != nil {
+		if err := s.logFileManager.CheckRotation(); err != nil {
+			s.structuredLogger.LogWarning("cleanup_log_rotation", fmt.Sprintf("Final log rotation check failed: %v", err))
+		}
+	}
+
+	if len(cleanupErrors) > 0 {
+		// Combine all cleanup errors
+		var errorMessages []string
+		for _, err := range cleanupErrors {
+			errorMessages = append(errorMessages, err.Error())
+		}
+		combinedError := fmt.Errorf("cleanup completed with errors: %s", strings.Join(errorMessages, "; "))
+		s.structuredLogger.LogError("cleanup_partial", "Cleanup completed with some errors", combinedError)
+		return combinedError
+	}
+
+	s.structuredLogger.LogInfo("cleanup_completed", "Cleanup operations completed successfully")
+	return nil
+}
+
+// handleConfigReloads handles configuration file changes
+func (s *PortRedirectService) handleConfigReloads() {
+	for {
+		select {
+		case newPorts := <-s.configWatcher.ReloadChan():
+			oldPortCount := len(s.config.Ports)
+			s.structuredLogger.LogConfigChange(oldPortCount, len(newPorts))
+
+			// Validate the new configuration
+			if err := validateConfigUpdate(newPorts); err != nil {
+				s.structuredLogger.LogError("config_validation", "Invalid configuration update", err)
+				s.lastError = fmt.Sprintf("Invalid configuration update: %v", err)
+				continue
+			}
+
+			// Update the service configuration
+			s.config.Ports = newPorts
+			s.configLoaded = time.Now()
+
+			// Update hosts file entries
+			if err := s.hostsManager.UpdatePortEntries(newPorts); err != nil {
+				s.structuredLogger.LogError("config_hosts_update", "Failed to update hosts file entries", err)
+				s.lastError = fmt.Sprintf("Failed to update hosts file entries: %v", err)
+			} else {
+				s.structuredLogger.LogInfo("config_hosts_updated", fmt.Sprintf("Successfully updated hosts file entries for %d ports", len(newPorts)))
+				s.lastError = "" // Clear any previous error
+			}
+
+		case err := <-s.configWatcher.ErrorChan():
+			s.structuredLogger.LogError("config_watcher", "Configuration watcher error", err)
+			s.lastError = fmt.Sprintf("Configuration watcher error: %v", err)
+		}
+	}
+}
+
+// checkPrivileges checks if the service has the required privileges to run
+func checkPrivileges() error {
+	// Check if we can bind to port 80 (requires root/admin privileges on Unix systems)
+	listener, err := net.Listen("tcp", ":80")
+	if err != nil {
+		if strings.Contains(err.Error(), "permission denied") || strings.Contains(err.Error(), "access is denied") {
+			return fmt.Errorf("insufficient privileges: binding to port 80 requires root/administrator privileges. Please run with sudo (Linux/macOS) or as Administrator (Windows)")
+		}
+		// Port might be in use by another service
+		return fmt.Errorf("cannot bind to port 80: %v. This may indicate another instance is running or another service is using port 80", err)
+	}
+	listener.Close()
+
+	// Check if we can write to /etc/hosts (Unix systems)
+	if _, err := os.Stat("/etc/hosts"); err == nil {
+		// Try to open hosts file for writing to test permissions
+		file, err := os.OpenFile("/etc/hosts", os.O_WRONLY|os.O_APPEND, 0644)
+		if err != nil {
+			if os.IsPermission(err) {
+				return fmt.Errorf("insufficient privileges: modifying /etc/hosts requires root/administrator privileges. Please run with sudo (Linux/macOS) or as Administrator (Windows)")
+			}
+			return fmt.Errorf("cannot access /etc/hosts: %v", err)
+		}
+		file.Close()
+	}
+
+	return nil
+}
+
+// checkSingleInstance checks if another instance of the service is already running
+func checkSingleInstance() error {
+	// Try to bind to port 80 temporarily to check if it's available
+	listener, err := net.Listen("tcp", ":80")
+	if err != nil {
+		return fmt.Errorf("port 80 is already in use (service may already be running)")
+	}
+	listener.Close()
+	return nil
+}
+
 // NewPortRedirectService creates a new instance of the port redirect service
-func NewPortRedirectService(config *Config, logger *log.Logger) *PortRedirectService {
+func NewPortRedirectService(config *Config, logger *log.Logger, logFileManager *LogFileManager) *PortRedirectService {
 	now := time.Now()
 	service := &PortRedirectService{
-		config:       config,
-		logger:       logger,
-		hostsManager: NewHostsManager(DefaultHostsPath, config.HostsBackupPath),
+		config:           config,
+		logger:           logger,
+		structuredLogger: NewStructuredLogger(logger),
+		logFileManager:   logFileManager,
+		hostsManager:     NewHostsManager(DefaultHostsPath, config.HostsBackupPath),
 		server: &http.Server{
 			Addr: ":80",
 		},
@@ -790,13 +1548,42 @@ func NewPortRedirectService(config *Config, logger *log.Logger) *PortRedirectSer
 }
 
 func main() {
-	logger := log.New(os.Stdout, "[PORT-REDIRECT] ", log.LstdFlags)
-	logger.Println("Port Redirect Service starting...")
+	// Setup log file management
+	logFilePath := "/var/log/port-redirect.log"
+	if os.Getenv("HOME") != "" {
+		// Use user's home directory on macOS
+		logFilePath = filepath.Join(os.Getenv("HOME"), "Library", "Logs", "port-redirect.log")
+	}
+
+	logFileManager := NewLogFileManager(logFilePath, 10, 5) // 10MB max size, keep 5 files
+	logger, err := logFileManager.SetupLogFile()
+	if err != nil {
+		// Fall back to stdout only if log file setup fails
+		logger = log.New(os.Stdout, "[PORT-REDIRECT] ", log.LstdFlags)
+		logger.Printf("Warning: Failed to setup log file, using stdout only: %v", err)
+	}
+
+	structuredLogger := NewStructuredLogger(logger)
+	structuredLogger.LogStartup("1.0.0", DefaultConfigPath, 0) // Port count will be updated after config load
+
+	// Check if we have the required privileges
+	if err := checkPrivileges(); err != nil {
+		structuredLogger.LogError("startup", "Insufficient privileges", err)
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	// Check if another instance is already running
+	if err := checkSingleInstance(); err != nil {
+		structuredLogger.LogError("startup", "Service is already running", err)
+		os.Exit(0)
+	}
 
 	// Load configuration
 	ports, err := loadConfig(DefaultConfigPath)
 	if err != nil {
-		logger.Fatalf("Failed to load configuration: %v", err)
+		structuredLogger.LogError("startup", "Failed to load configuration", err)
+		os.Exit(1)
 	}
 
 	// Create service configuration
@@ -807,15 +1594,104 @@ func main() {
 		LogLevel:        "INFO",
 	}
 
+	// Log the actual port count now that we have it
+	structuredLogger.LogStartup("1.0.0", DefaultConfigPath, len(ports))
+
 	// Create service instance
-	service := NewPortRedirectService(config, logger)
+	service := NewPortRedirectService(config, logger, logFileManager)
 
 	// Create backup of hosts file
 	if err := service.hostsManager.CreateBackup(); err != nil {
-		logger.Printf("Warning: Failed to create hosts file backup: %v", err)
+		service.structuredLogger.LogWarning("hosts_backup", fmt.Sprintf("Failed to create hosts file backup: %v", err))
 	} else {
-		logger.Println("Created hosts file backup")
+		service.structuredLogger.LogInfo("hosts_backup", "Created hosts file backup successfully")
 	}
 
-	logger.Printf("Service initialized with %d configured ports", len(config.Ports))
+	// Setup hosts file entries for configured ports
+	if err := service.hostsManager.AddPortEntries(config.Ports); err != nil {
+		service.structuredLogger.LogWarning("hosts_setup", fmt.Sprintf("Failed to setup hosts file entries: %v", err))
+	} else {
+		service.structuredLogger.LogInfo("hosts_setup", fmt.Sprintf("Added hosts file entries for %d ports", len(config.Ports)))
+	}
+
+	// Start configuration watcher
+	service.configWatcher = NewConfigWatcher(config.ConfigFilePath, logger)
+	if err := service.configWatcher.Start(); err != nil {
+		service.structuredLogger.LogWarning("config_watcher", fmt.Sprintf("Failed to start config watcher: %v", err))
+	} else {
+		service.structuredLogger.LogInfo("config_watcher", "Started configuration file watcher")
+		// Handle configuration reloads
+		go service.handleConfigReloads()
+	}
+
+	service.structuredLogger.LogInfo("service_initialized", fmt.Sprintf("Service initialized with %d configured ports", len(config.Ports)))
+
+	// Setup signal handling for graceful shutdown
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	// Setup cleanup on unexpected termination
+	defer func() {
+		if r := recover(); r != nil {
+			service.structuredLogger.LogError("panic_recovery", fmt.Sprintf("Service panicked: %v", r), nil)
+			if err := service.Cleanup(); err != nil {
+				service.structuredLogger.LogError("panic_cleanup", "Failed to cleanup after panic", err)
+			}
+		}
+	}()
+
+	// Start periodic log rotation check
+	if logFileManager != nil {
+		go func() {
+			ticker := time.NewTicker(1 * time.Hour) // Check every hour
+			defer ticker.Stop()
+
+			for {
+				select {
+				case <-ticker.C:
+					if err := logFileManager.CheckRotation(); err != nil {
+						service.structuredLogger.LogWarning("log_rotation", fmt.Sprintf("Log rotation check failed: %v", err))
+					}
+				case <-sigChan:
+					return // Exit when shutdown signal is received
+				}
+			}
+		}()
+	}
+
+	// Start the HTTP server
+	if err := service.Start(); err != nil {
+		service.structuredLogger.LogError("startup", "Failed to start HTTP server", err)
+		os.Exit(1)
+	}
+
+	// Wait for shutdown signal
+	sig := <-sigChan
+	service.structuredLogger.LogInfo("shutdown_signal", fmt.Sprintf("Received signal %v, initiating graceful shutdown", sig))
+
+	// Create shutdown context with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// Track shutdown success
+	shutdownSuccess := true
+
+	// Stop the HTTP server
+	if err := service.Stop(ctx); err != nil {
+		service.structuredLogger.LogError("shutdown", "Error during server shutdown", err)
+		shutdownSuccess = false
+	}
+
+	// Perform cleanup (always attempt cleanup even if server shutdown failed)
+	if err := service.Cleanup(); err != nil {
+		service.structuredLogger.LogError("cleanup", "Error during cleanup", err)
+		shutdownSuccess = false
+	}
+
+	if shutdownSuccess {
+		service.structuredLogger.LogInfo("shutdown_complete", "Port Redirect Service stopped gracefully")
+	} else {
+		service.structuredLogger.LogError("shutdown_complete", "Port Redirect Service stopped with errors", nil)
+		os.Exit(1)
+	}
 }

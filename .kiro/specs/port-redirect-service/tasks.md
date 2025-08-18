@@ -47,52 +47,52 @@
     - Use managed section markers (BEGIN/END PORT-REDIRECT-SERVICE)
     - _Requirements: 3.1, 3.2, 2.4, 2.5_
 
-- [-] 5. Create status web interface
-  - [-] 5.1 Implement status data collection
+- [x] 5. Create status web interface
+  - [x] 5.1 Implement status data collection
     - Create struct to hold service status information
     - Implement functions to check hosts file validity
     - Add configuration validation and error reporting
     - Track service uptime and last configuration reload
     - _Requirements: 4.1, 4.2, 4.3, 4.5_
   
-  - [ ] 5.2 Create status page handler
+  - [x] 5.2 Create status page handler
     - Write HTTP handler for `/status` endpoint
     - Generate HTML page showing configuration and status
     - Display hosts file validation results and discrepancies
     - Add JSON API endpoint for programmatic access
     - _Requirements: 4.1, 4.2, 4.4_
 
-- [ ] 6. Implement main HTTP server
-  - [ ] 6.1 Create HTTP server setup
+- [x] 6. Implement main HTTP server
+  - [x] 6.1 Create HTTP server setup
     - Initialize HTTP server on port 80 using standard library
     - Register redirect handler for all requests except `/status`
     - Add graceful shutdown handling with signal catching
     - Implement error handling for port binding failures
     - _Requirements: 5.3, 5.4, 7.1, 7.2_
   
-  - [ ] 6.2 Add logging and error handling
+  - [x] 6.2 Add logging and error handling
     - Implement structured logging for all operations
     - Log redirect operations with source and target
     - Add startup, shutdown, and error logging
     - Create log rotation or size management
     - _Requirements: 7.1, 7.2, 7.3, 7.4, 7.5_
 
-- [ ] 7. Create service lifecycle management
-  - [ ] 7.1 Implement service startup logic
+- [x] 7. Create service lifecycle management
+  - [x] 7.1 Implement service startup logic
     - Create main function that initializes all components
     - Add configuration loading and hosts file setup
     - Implement service detection to prevent multiple instances
     - Add privilege checking and clear error messages
     - _Requirements: 5.1, 5.2, 5.5, 7.5_
   
-  - [ ] 7.2 Implement graceful shutdown
+  - [x] 7.2 Implement graceful shutdown
     - Add signal handlers for SIGTERM and SIGINT
     - Implement cleanup of hosts file entries on shutdown
     - Ensure proper resource cleanup and logging
     - _Requirements: 3.2, 3.5, 7.4_
 
 - [ ] 8. Create cross-platform service installation
-  - [ ] 8.1 Implement macOS launchd integration
+  - [-] 8.1 Implement macOS launchd integration
     - Create launchd plist file template
     - Write installation script for macOS service registration
     - Add service management commands (start, stop, restart)
