@@ -62,7 +62,7 @@
   - Write unit tests for rate limiting functionality
   - _Requirements: 5.4_
 
-- [-] 9. Enhance status and monitoring endpoints
+- [x] 9. Enhance status and monitoring endpoints
   - Extend status endpoint to show deployment mode and web service metrics
   - Add web service specific status information (domain patterns, request counts)
   - Implement health check endpoint suitable for load balancers
@@ -70,26 +70,5 @@
   - Write unit tests for enhanced status endpoints
   - _Requirements: 6.4_
 
-- [ ] 10. Update logging and error handling for web service mode
-  - Extend StructuredLogger to include web service specific log fields
-  - Add deployment mode information to all log entries
-  - Implement error categorization for web service specific errors
-  - Create log rotation and management for web service deployments
-  - Write unit tests for enhanced logging functionality
-  - _Requirements: 6.1, 6.2, 6.3_
-
-- [ ] 11. Create comprehensive integration tests
-  - Write end-to-end tests for local mode functionality (regression testing)
-  - Create end-to-end tests for web service mode request processing
-  - Implement configuration hot-reload testing for both modes
-  - Add cross-mode compatibility and migration testing
-  - Create performance and load testing for web service mode
-  - _Requirements: All requirements validation_
-
-- [ ] 12. Add deployment and configuration documentation
-  - Create configuration examples for web service mode deployment
-  - Write deployment guides for different environments (Docker, systemd, etc.)
-  - Add troubleshooting documentation for web service specific issues
-  - Create migration guide from local mode to web service mode
-  - Update existing documentation to reflect dual-mode capabilities
-  - _Requirements: 2.4, 3.1, 3.2_
+- [ ] 10. Add/update comprehensive documentation. 
+  - It should include step by step any and all configuration required, how to control the two modes.
