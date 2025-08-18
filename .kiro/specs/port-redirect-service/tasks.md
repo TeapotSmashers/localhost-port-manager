@@ -6,49 +6,49 @@
   - Create basic configuration struct for ports and file paths
   - _Requirements: 1.1, 2.1, 3.1_
 
-- [ ] 2. Implement configuration management
-  - [ ] 2.1 Create configuration file parser
+- [x] 2. Implement configuration management
+  - [x] 2.1 Create configuration file parser
     - Write function to read port numbers from text file (one per line)
     - Implement comment support (lines starting with #)
     - Add validation for port numbers (1-65535 range)
     - Create default configuration file creation logic
     - _Requirements: 2.1, 2.2, 2.3_
   
-  - [ ] 2.2 Add configuration file watching
+  - [x] 2.2 Add configuration file watching
     - Implement file modification detection using standard library
     - Create configuration reload mechanism
     - Add error handling for invalid configuration updates
     - _Requirements: 2.3, 2.4, 2.5_
 
-- [ ] 3. Implement HTTP request handling
-  - [ ] 3.1 Create port extraction logic
+- [x] 3. Implement HTTP request handling
+  - [x] 3.1 Create port extraction logic
     - Write regex pattern to match `<port>.<tld>` format in Host header
     - Implement port number extraction and validation
     - Add support for common development TLDs (.local, .dev, .test, .localhost)
     - _Requirements: 1.1, 1.2, 6.1, 6.2_
   
-  - [ ] 3.2 Implement redirect handler
+  - [x] 3.2 Implement redirect handler
     - Create HTTP handler that extracts port from Host header
     - Generate HTTP 301 redirect to `localhost:<port>`
     - Add error responses for invalid hosts (404) and invalid ports (400)
     - _Requirements: 1.2, 1.3, 1.4, 6.4_
 
-- [ ] 4. Implement hosts file management
-  - [ ] 4.1 Create hosts file backup and restore
+- [x] 4. Implement hosts file management
+  - [x] 4.1 Create hosts file backup and restore
     - Write function to create backup of original `/etc/hosts`
     - Implement restore mechanism for cleanup
     - Add error handling for file permission issues
     - _Requirements: 3.3, 3.4, 3.5_
   
-  - [ ] 4.2 Implement hosts file entry management
+  - [x] 4.2 Implement hosts file entry management
     - Create function to add port-based entries to `/etc/hosts`
     - Implement entry removal for cleanup
     - Add logic to update entries when configuration changes
     - Use managed section markers (BEGIN/END PORT-REDIRECT-SERVICE)
     - _Requirements: 3.1, 3.2, 2.4, 2.5_
 
-- [ ] 5. Create status web interface
-  - [ ] 5.1 Implement status data collection
+- [-] 5. Create status web interface
+  - [-] 5.1 Implement status data collection
     - Create struct to hold service status information
     - Implement functions to check hosts file validity
     - Add configuration validation and error reporting

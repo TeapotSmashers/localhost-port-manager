@@ -10,6 +10,7 @@ The Port Redirect Service is a lightweight Go daemon that intercepts HTTP reques
 - **Lightweight**: Single binary with minimal resource footprint
 - **Cross-Platform**: Works on both macOS and Linux with platform-specific service integration
 - **Zero Configuration**: Works out of the box with sensible defaults
+- **Incremental Development**: Regular git commits after each functional milestone to track progress and enable rollback if needed
 
 ## Architecture
 
