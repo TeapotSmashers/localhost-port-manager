@@ -1,0 +1,17 @@
+# Port Redirect Service Configuration - Web Service Mode
+# Configured for fly.io deployment
+
+# Ports to redirect
+3000
+8080
+5173
+9000
+
+# Web service mode configuration
+mode=web
+web_port=8080
+domain_patterns=*.sankalpmukim.dev
+
+# Optional settings
+enable_rate_limit=true
+rate_limit_rps=100
